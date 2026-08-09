@@ -1,0 +1,106 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-display: 'Barlow Condensed', 'Inter', sans-serif;
+  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  --color-paper: #f6f5f1;
+  --color-card: #ffffff;
+  --color-ink: #1c2126;
+  --color-ink-soft: #565f66;
+  --color-line: #e3e0d8;
+
+  --color-graphite-950: #101316;
+  --color-graphite-900: #191d21;
+  --color-graphite-800: #23282e;
+  --color-graphite-700: #313841;
+  --color-graphite-600: #4a5560;
+
+  --color-amber-400: #f8b84a;
+  --color-amber-500: #f5a623;
+  --color-amber-600: #d98d0e;
+  --color-amber-50: #fdf3e0;
+
+  --color-steel-400: #5c93b3;
+  --color-steel-500: #3b6e8f;
+  --color-steel-600: #2e5872;
+  --color-steel-50: #eaf2f6;
+
+  --color-rust-500: #c4432b;
+  --color-rust-50: #fbeae6;
+
+  --color-moss-500: #4b7b4f;
+  --color-moss-50: #ecf3ec;
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    color: var(--color-ink);
+    background: var(--color-paper);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    min-height: 100vh;
+  }
+
+  ::selection {
+    background: var(--color-amber-400);
+    color: var(--color-graphite-950);
+  }
+
+  * {
+    border-color: var(--color-line);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-amber-500);
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  /* Etiqueta de status ao estilo "carimbo de almoxarifado" — o elemento assinatura do produto. */
+  .stamp {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-family: var(--font-display);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    font-size: 0.72rem;
+    padding: 0.18rem 0.6rem;
+    border: 1.5px dashed currentColor;
+    border-radius: 3px;
+    transform: rotate(-1.5deg);
+    white-space: nowrap;
+  }
+
+  .code-tag {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    letter-spacing: 0.02em;
+  }
+
+  .card-surface {
+    background: var(--color-card);
+    border: 1px solid var(--color-line);
+    border-radius: 0.75rem;
+  }
+}
+
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-enter {
+  animation: fade-in-up 0.35s ease both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-enter { animation: none; }
+}
