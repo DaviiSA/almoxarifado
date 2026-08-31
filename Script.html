@@ -1,0 +1,1007 @@
+<script>
+/* ============================================================================
+ * NÚCLEO: chamadas ao servidor, sessão, helpers de formatação e componentes
+ * ========================================================================== */
+
+let state = { token: null, user: null };
+const charts = {};
+
+function gs(fn, ...args) {
+  return new Promise((resolve, reject) => {
+    google.script.run
+      .withSuccessHandler(resolve)
+      .withFailureHandler((err) => reject(new Error(err && err.message ? err.message : String(err))))
+      [fn](...args);
+  });
+}
+
+const api = {
+  login: (email, password) => gs('apiLogin', email, password),
+  logout: () => gs('apiLogout', state.token),
+  me: () => gs('apiMe', state.token),
+  setupStatus: () => gs('apiGetSetupStatus', state.token),
+  provisionSheets: () => gs('apiProvisionSheets', state.token),
+  materials: () => gs('apiGetMaterials', state.token),
+  createMaterial: (data) => gs('apiCreateMaterial', state.token, data),
+  updateMaterial: (id, data) => gs('apiUpdateMaterial', state.token, id, data),
+  works: () => gs('apiGetWorks', state.token),
+  createWork: (data) => gs('apiCreateWork', state.token, data),
+  updateWork: (id, data) => gs('apiUpdateWork', state.token, id, data),
+  entries: () => gs('apiGetEntries', state.token),
+  createEntry: (data) => gs('apiCreateEntry', state.token, data),
+  outputs: () => gs('apiGetOutputs', state.token),
+  createOutput: (data) => gs('apiCreateOutput', state.token, data),
+  fieldApps: () => gs('apiGetFieldApplications', state.token),
+  createFieldApp: (data) => gs('apiCreateFieldApplication', state.token, data),
+  inventory: () => gs('apiGetInventory', state.token),
+  stats: () => gs('apiGetStats', state.token),
+  users: () => gs('apiGetUsers', state.token),
+  createUser: (data) => gs('apiCreateUser', state.token, data),
+  toggleUser: (id, ativo) => gs('apiToggleUser', state.token, id, ativo),
+};
+
+// ── Sessão ──────────────────────────────────────────────────────────────
+function loadSession() {
+  try {
+    const raw = localStorage.getItem('almox_session');
+    if (raw) state = JSON.parse(raw);
+  } catch (e) { /* ignore */ }
+}
+function saveSession() { localStorage.setItem('almox_session', JSON.stringify(state)); }
+function clearSession() { state = { token: null, user: null }; localStorage.removeItem('almox_session'); }
+
+// ── Formatação ──────────────────────────────────────────────────────────
+function fmtDate(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso.length <= 10 ? `${iso}T00:00:00` : iso);
+  return isNaN(d) ? iso : d.toLocaleDateString('pt-BR');
+}
+function fmtNumber(n) { return Number(n || 0).toLocaleString('pt-BR'); }
+function todayISO() { return new Date().toISOString().slice(0, 10); }
+function timeAgo(iso) {
+  const d = new Date(iso.length <= 10 ? `${iso}T00:00:00` : iso);
+  if (isNaN(d)) return iso;
+  const days = Math.floor((Date.now() - d.getTime()) / 86400000);
+  if (days <= 0) return 'hoje';
+  if (days === 1) return 'ontem';
+  if (days < 30) return `há ${days} dias`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `há ${months} ${months === 1 ? 'mês' : 'meses'}`;
+  return `há ${Math.floor(months / 12)} ano(s)`;
+}
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function downloadCSV(filename, rows) {
+  if (!rows.length) return;
+  const headers = Object.keys(rows[0]);
+  const escapeCsv = (v) => { const s = String(v ?? ''); return /[",\n;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+  const lines = [headers.join(';'), ...rows.map((r) => headers.map((h) => escapeCsv(r[h])).join(';'))];
+  const blob = new Blob(['\ufeff' + lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+function icons() { if (window.lucide) lucide.createIcons(); }
+
+// ── Toast ───────────────────────────────────────────────────────────────
+function toast(message, type = 'success') {
+  const wrap = document.getElementById('toasts');
+  const el = document.createElement('div');
+  const border = type === 'success' ? 'border-l-moss-500' : 'border-l-rust-500';
+  const icon = type === 'success' ? 'check-circle-2' : 'x-circle';
+  const color = type === 'success' ? 'text-moss-500' : 'text-rust-500';
+  el.className = `animate-enter card-surface flex items-start gap-2.5 rounded-lg px-4 py-3 shadow-lg border-l-4 ${border}`;
+  el.innerHTML = `<i data-lucide="${icon}" class="${color} mt-0.5 shrink-0" style="width:18px;height:18px"></i>
+    <p class="text-sm text-ink flex-1">${esc(message)}</p>
+    <button class="text-ink-soft hover:text-ink" onclick="this.closest('div.animate-enter').remove()">
+      <i data-lucide="x" style="width:15px;height:15px"></i></button>`;
+  wrap.appendChild(el);
+  icons();
+  setTimeout(() => el.remove(), 4500);
+}
+
+// ── Modal ───────────────────────────────────────────────────────────────
+function openModal(title, bodyHtml) {
+  closeModal();
+  const el = document.createElement('div');
+  el.id = 'modal-root';
+  el.className = 'fixed inset-0 z-40 flex items-start sm:items-center justify-center p-4 overflow-y-auto';
+  el.innerHTML = `
+    <div class="fixed inset-0 bg-graphite-950/50" onclick="closeModal()"></div>
+    <div class="relative card-surface w-full max-w-lg my-8 shadow-2xl animate-enter">
+      <div class="flex items-center justify-between px-5 py-4 border-b border-line">
+        <h2 class="font-display text-2xl font-semibold text-ink">${esc(title)}</h2>
+        <button onclick="closeModal()" class="text-ink-soft hover:text-ink rounded p-1"><i data-lucide="x" style="width:18px;height:18px"></i></button>
+      </div>
+      <div class="p-5">${bodyHtml}</div>
+    </div>`;
+  document.body.appendChild(el);
+  icons();
+}
+function closeModal() { const el = document.getElementById('modal-root'); if (el) el.remove(); }
+
+// ── Componentes de UI reutilizados como strings ──────────────────────────
+function stamp(text, tone = 'graphite') {
+  const colors = { amber: 'text-amber-600', steel: 'text-steel-600', rust: 'text-rust-500', moss: 'text-moss-500', graphite: 'text-graphite-600' };
+  return `<span class="stamp ${colors[tone] || colors.graphite}">${esc(text)}</span>`;
+}
+function statusTone(status) {
+  return { 'Em andamento': 'steel', 'Concluída': 'moss', Particular: 'amber', Energisa: 'steel', Misto: 'rust' }[status] || 'graphite';
+}
+function pageHeader(eyebrow, title, description, actionHtml) {
+  return `<div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 mb-6">
+    <div>
+      <p class="code-tag text-amber-600 font-semibold uppercase tracking-wide">${esc(eyebrow)}</p>
+      <h1 class="font-display text-4xl font-bold text-ink mt-0.5">${esc(title)}</h1>
+      ${description ? `<p class="text-sm text-ink-soft mt-1 max-w-xl">${esc(description)}</p>` : ''}
+    </div>
+    ${actionHtml || ''}
+  </div>`;
+}
+function emptyState(icon, title, description) {
+  return `<div class="flex flex-col items-center justify-center text-center py-16 px-4">
+    <div class="rounded-full bg-graphite-900/5 p-4 mb-3"><i data-lucide="${icon}" class="text-ink-soft" style="width:26px;height:26px"></i></div>
+    <p class="font-display text-xl font-semibold text-ink">${esc(title)}</p>
+    <p class="text-sm text-ink-soft mt-1 max-w-sm">${esc(description)}</p>
+  </div>`;
+}
+function spinner() {
+  return `<div class="flex justify-center py-24"><i data-lucide="loader-2" class="animate-spin text-amber-500" style="width:28px;height:28px"></i></div>`;
+}
+function field(label, inputHtml, required = false) {
+  return `<label class="block mb-3.5">
+    <span class="block text-xs font-semibold uppercase tracking-wide text-ink-soft mb-1.5">${esc(label)}${required ? ' <span class="text-rust-500">*</span>' : ''}</span>
+    ${inputHtml}
+  </label>`;
+}
+
+/* ============================================================================
+ * LOGIN
+ * ========================================================================== */
+function mountLogin() {
+  const app = document.getElementById('app');
+  app.innerHTML = `
+  <div class="min-h-screen flex bg-graphite-950">
+    <div class="hidden lg:flex lg:w-1/2 flex-col justify-between p-12 bg-graphite-900 relative overflow-hidden">
+      <div class="absolute inset-0 opacity-[0.06]" style="background-image:repeating-linear-gradient(45deg,#F5A623 0,#F5A623 2px,transparent 2px,transparent 22px)"></div>
+      <div class="relative flex items-center gap-2.5">
+        <div class="rounded-lg bg-amber-500 p-2"><i data-lucide="warehouse" class="text-graphite-950" style="width:22px;height:22px"></i></div>
+        <span class="font-display text-xl font-bold text-white">ALMOXARIFADO</span>
+      </div>
+      <div class="relative">
+        ${stamp('Estoque · Obras · Campo', 'amber')}
+        <h1 class="font-display text-5xl font-bold text-white leading-[1.05] max-w-md mt-4">Todo material, toda obra, um único painel.</h1>
+        <p class="text-graphite-600 mt-4 max-w-sm text-sm leading-relaxed">Entradas, saídas e aplicações em campo registradas direto na sua planilha Google — sem depender de arquivos soltos ou controles paralelos.</p>
+      </div>
+      <p class="relative code-tag text-graphite-700">v1.0 · Google Apps Script + Google Sheets</p>
+    </div>
+    <div class="flex-1 flex items-center justify-center p-6 bg-paper">
+      <form id="login-form" class="w-full max-w-sm animate-enter">
+        <div class="lg:hidden flex items-center gap-2.5 mb-8 justify-center">
+          <div class="rounded-lg bg-amber-500 p-1.5"><i data-lucide="warehouse" class="text-graphite-950" style="width:18px;height:18px"></i></div>
+          <span class="font-display text-lg font-bold text-ink">ALMOXARIFADO</span>
+        </div>
+        <h2 class="font-display text-3xl font-bold text-ink">Entrar</h2>
+        <p class="text-sm text-ink-soft mt-1 mb-6">Acesse com seu e-mail e senha cadastrados.</p>
+        <div id="login-error" class="hidden flex items-start gap-2 rounded-md bg-rust-50 text-rust-500 text-sm px-3 py-2.5 mb-4">
+          <i data-lucide="alert-circle" style="width:16px;height:16px" class="mt-0.5 shrink-0"></i><span id="login-error-text"></span>
+        </div>
+        ${field('E-mail', `<input class="field-input" type="email" id="login-email" required autofocus placeholder="voce@empresa.com" />`, true)}
+        ${field('Senha', `<input class="field-input" type="password" id="login-password" required placeholder="••••••••" />`, true)}
+        <button type="submit" id="login-submit" class="btn btn-secondary w-full mt-2">Entrar</button>
+        <p class="text-xs text-ink-soft mt-6 text-center leading-relaxed">
+          Primeiro acesso? Use a conta administradora configurada nas Propriedades do Script
+          (<code class="code-tag">ADMIN_EMAIL</code> / <code class="code-tag">ADMIN_PASSWORD</code>) e cadastre a equipe em Usuários.
+        </p>
+      </form>
+    </div>
+  </div>`;
+  icons();
+
+  document.getElementById('login-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = document.getElementById('login-submit');
+    const errBox = document.getElementById('login-error');
+    errBox.classList.add('hidden');
+    btn.disabled = true;
+    btn.textContent = 'Entrando…';
+    try {
+      const email = document.getElementById('login-email').value;
+      const password = document.getElementById('login-password').value;
+      const r = await api.login(email, password);
+      state.token = r.token; state.user = r.user;
+      saveSession();
+      mountApp();
+    } catch (err) {
+      document.getElementById('login-error-text').textContent = err.message || 'Não foi possível entrar.';
+      errBox.classList.remove('hidden');
+      btn.disabled = false;
+      btn.textContent = 'Entrar';
+    }
+  });
+}
+
+/* ============================================================================
+ * SHELL (sidebar + topbar) e ROTEADOR
+ * ========================================================================== */
+const NAV = [
+  { to: '#/', label: 'Painel', icon: 'layout-dashboard', roles: ['ADMIN', 'EQUIPE'] },
+  { to: '#/estoque', label: 'Estoque', icon: 'boxes', roles: ['ADMIN', 'EQUIPE'] },
+  { to: '#/materiais', label: 'Materiais', icon: 'package', roles: ['ADMIN', 'EQUIPE'] },
+  { to: '#/obras', label: 'Obras', icon: 'hard-hat', roles: ['ADMIN', 'EQUIPE'] },
+  { to: '#/entradas', label: 'Entradas', icon: 'arrow-down-to-line', roles: ['ADMIN'] },
+  { to: '#/saidas', label: 'Saídas', icon: 'arrow-up-from-line', roles: ['ADMIN', 'EQUIPE'] },
+  { to: '#/aplicacoes', label: 'Aplicações em campo', icon: 'map-pin', roles: ['ADMIN', 'EQUIPE'] },
+  { to: '#/usuarios', label: 'Usuários', icon: 'users', roles: ['ADMIN'] },
+];
+
+function mountApp() {
+  const items = NAV.filter((n) => n.roles.includes(state.user.perfil));
+  const navHtml = items.map((n) => `
+    <button type="button" data-route="${n.to}" class="nav-link" onclick="navigateTo('${n.to}')">
+      <i data-lucide="${n.icon}" style="width:17px;height:17px"></i>${esc(n.label)}
+    </button>`).join('');
+
+  const sidebarInner = `
+    <div class="flex items-center gap-2.5 px-5 py-5">
+      <div class="rounded-lg bg-amber-500 p-1.5"><i data-lucide="warehouse" class="text-graphite-950" style="width:20px;height:20px"></i></div>
+      <div>
+        <p class="font-display text-lg font-bold text-white leading-none">ALMOXARIFADO</p>
+        <p class="code-tag text-graphite-600 mt-0.5">controle de materiais</p>
+      </div>
+    </div>
+    <nav class="flex-1 px-3 py-2 space-y-0.5 overflow-y-auto">${navHtml}</nav>
+    <div class="px-3 py-4 border-t border-graphite-800">
+      <div class="px-3 mb-2">
+        <p class="text-sm font-semibold text-white truncate">${esc(state.user.nome)}</p>
+        <p class="code-tag text-graphite-600 truncate">${state.user.perfil === 'ADMIN' ? 'Administrador' : `Equipe · ${esc(state.user.equipeVinculada || '—')}`}</p>
+      </div>
+      <button id="logout-btn" class="flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-sm font-medium text-graphite-600 hover:bg-graphite-800 hover:text-white transition-colors">
+        <i data-lucide="log-out" style="width:17px;height:17px"></i>Sair
+      </button>
+    </div>`;
+
+  document.getElementById('app').innerHTML = `
+    <div class="min-h-screen lg:flex">
+      <aside class="hidden lg:flex lg:flex-col lg:w-64 shrink-0 bg-graphite-900 min-h-screen sticky top-0">${sidebarInner}</aside>
+      <div id="mobile-sidebar" class="fixed inset-0 z-40 lg:hidden hidden">
+        <div class="fixed inset-0 bg-graphite-950/60" onclick="document.getElementById('mobile-sidebar').classList.add('hidden')"></div>
+        <aside class="relative flex flex-col w-64 h-full bg-graphite-900">${sidebarInner}</aside>
+      </div>
+      <div class="flex-1 min-w-0">
+        <header class="lg:hidden flex items-center justify-between px-4 py-3 bg-graphite-900 sticky top-0 z-30">
+          <div class="flex items-center gap-2">
+            <div class="rounded-md bg-amber-500 p-1"><i data-lucide="warehouse" class="text-graphite-950" style="width:16px;height:16px"></i></div>
+            <span class="font-display font-bold text-white">ALMOXARIFADO</span>
+          </div>
+          <button onclick="document.getElementById('mobile-sidebar').classList.remove('hidden')" class="text-white p-1"><i data-lucide="menu" style="width:22px;height:22px"></i></button>
+        </header>
+        <main id="content" class="p-4 sm:p-6 lg:p-8 max-w-[1400px] mx-auto"></main>
+      </div>
+    </div>`;
+
+  document.getElementById('logout-btn').addEventListener('click', async () => {
+    try { await api.logout(); } catch (e) { /* ignore */ }
+    clearSession();
+    mountLogin();
+  });
+
+  window.addEventListener('hashchange', renderRoute);
+  renderRoute();
+}
+
+const ROUTES = {
+  '#/': { view: viewDashboard, roles: ['ADMIN', 'EQUIPE'] },
+  '#/estoque': { view: viewInventory, roles: ['ADMIN', 'EQUIPE'] },
+  '#/materiais': { view: viewMaterials, roles: ['ADMIN', 'EQUIPE'] },
+  '#/obras': { view: viewWorks, roles: ['ADMIN', 'EQUIPE'] },
+  '#/entradas': { view: viewEntries, roles: ['ADMIN'] },
+  '#/saidas': { view: viewOutputs, roles: ['ADMIN', 'EQUIPE'] },
+  '#/aplicacoes': { view: viewFieldApplications, roles: ['ADMIN', 'EQUIPE'] },
+  '#/usuarios': { view: viewUsers, roles: ['ADMIN'] },
+};
+
+function navigateTo(route) {
+  document.getElementById('mobile-sidebar')?.classList.add('hidden');
+  if (location.hash === route) renderRoute(); // recarrega se clicar na página já ativa
+  else location.hash = route;
+}
+
+function renderRoute() {
+  const hash = location.hash || '#/';
+  const route = ROUTES[hash];
+  document.querySelectorAll('[data-route]').forEach((a) => a.classList.toggle('active', a.getAttribute('data-route') === hash));
+  const content = document.getElementById('content');
+  if (!route || !route.roles.includes(state.user.perfil)) {
+    content.innerHTML = emptyState('package-x', 'Página não encontrada', 'Este material não está catalogado no sistema.');
+    icons();
+    return;
+  }
+  content.innerHTML = spinner();
+  icons();
+  route.view(content).catch((err) => {
+    content.innerHTML = `<div class="card-surface p-6 text-center text-rust-500 text-sm">${esc(err.message)}</div>`;
+  });
+}
+
+/* ============================================================================
+ * INICIALIZAÇÃO
+ * ========================================================================== */
+function boot() {
+  loadSession();
+  if (state.token) {
+    api.me().then((r) => { state.user = r.user; saveSession(); mountApp(); })
+      .catch(() => { clearSession(); mountLogin(); });
+  } else {
+    mountLogin();
+  }
+}
+window.addEventListener('DOMContentLoaded', boot);
+
+/* ============================================================================
+ * DASHBOARD
+ * ========================================================================== */
+async function viewDashboard(el) {
+  const stats = await api.stats();
+  const firstName = esc((state.user.nome || '').split(' ')[0]);
+
+  el.innerHTML = pageHeader('Visão geral', `Bem-vindo${firstName ? ', ' + firstName : ''}`,
+    'Panorama consolidado do estoque, das obras e da movimentação recente.') + `
+    <div class="space-y-6">
+      <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+        ${statCard('Estoque Particular', fmtNumber(stats.particularTotal), 'boxes', 'amber', 'unidades no total')}
+        ${statCard('Estoque Energisa', fmtNumber(stats.energisaTotal), 'zap', 'steel', 'unidades no total')}
+        ${statCard('Obras em andamento', fmtNumber(stats.obrasAndamento), 'hard-hat', 'moss', '')}
+        ${statCard('Alertas de estoque', fmtNumber(stats.alertasEstoque), 'alert-triangle', 'rust', 'materiais abaixo do mínimo')}
+      </div>
+      <div class="grid grid-cols-1 lg:grid-cols-5 gap-4">
+        <div class="card-surface p-5 lg:col-span-3">
+          <p class="font-display text-xl font-semibold text-ink mb-4">Movimentação — últimos 6 meses</p>
+          <canvas id="chart-movimentacao" height="130"></canvas>
+        </div>
+        <div class="card-surface p-5 lg:col-span-2">
+          <p class="font-display text-xl font-semibold text-ink mb-4">Estoque por categoria</p>
+          ${stats.estoquePorCategoria.length === 0
+            ? emptyState('boxes', 'Sem materiais', 'Cadastre materiais para ver a distribuição por categoria.')
+            : `<canvas id="chart-categoria" height="130"></canvas>`}
+        </div>
+      </div>
+      <div class="grid grid-cols-1 lg:grid-cols-5 gap-4">
+        <div class="card-surface p-5 lg:col-span-2">
+          <div class="flex items-center gap-2 mb-4"><i data-lucide="alert-triangle" class="text-rust-500" style="width:17px;height:17px"></i>
+            <p class="font-display text-xl font-semibold text-ink">Estoque baixo</p></div>
+          ${stats.materiaisAbaixoMinimo.length === 0
+            ? `<p class="text-sm text-ink-soft py-6 text-center">Nenhum material abaixo do estoque mínimo. 🎉</p>`
+            : `<ul class="divide-y divide-line -mx-1">${stats.materiaisAbaixoMinimo.slice(0, 8).map((m) => `
+                <li class="flex items-center justify-between gap-3 px-1 py-2.5">
+                  <div class="min-w-0"><p class="text-sm font-medium text-ink truncate">${esc(m.descricao)}</p>
+                    <p class="code-tag text-ink-soft">mínimo: ${fmtNumber(m.estoqueMinimo)} ${esc(m.unidade)}</p></div>
+                  ${stamp(`${fmtNumber(m.total)} ${m.unidade}`, 'rust')}
+                </li>`).join('')}</ul>`}
+        </div>
+        <div class="card-surface p-5 lg:col-span-3">
+          <p class="font-display text-xl font-semibold text-ink mb-4">Atividade recente</p>
+          ${stats.atividadeRecente.length === 0
+            ? emptyState('boxes', 'Sem movimentações', 'Os lançamentos de entrada, saída e aplicação em campo aparecerão aqui.')
+            : `<ul class="divide-y divide-line -mx-1">${stats.atividadeRecente.map((a) => {
+                const icon = { entrada: 'arrow-down-to-line', saida: 'arrow-up-from-line', aplicacao: 'map-pin' }[a.tipo];
+                const label = { entrada: 'Entrada', saida: 'Saída', aplicacao: 'Aplicação' }[a.tipo];
+                return `<li class="flex items-center gap-3 px-1 py-2.5">
+                  <div class="rounded-md bg-graphite-900/5 p-1.5 shrink-0"><i data-lucide="${icon}" class="text-ink-soft" style="width:15px;height:15px"></i></div>
+                  <div class="min-w-0 flex-1"><p class="text-sm font-medium text-ink truncate">${label} de ${fmtNumber(a.quantidade)} — ${esc(a.descricaoMaterial)}</p>
+                    <p class="text-xs text-ink-soft truncate">${esc(a.detalhe)} · ${esc(a.responsavel)}</p></div>
+                  <span class="text-xs text-ink-soft shrink-0">${timeAgo(a.data)}</span>
+                </li>`;
+              }).join('')}</ul>`}
+        </div>
+      </div>
+    </div>`;
+  icons();
+
+  if (charts.mov) charts.mov.destroy();
+  charts.mov = new Chart(document.getElementById('chart-movimentacao'), {
+    type: 'bar',
+    data: {
+      labels: stats.movimentacaoMensal.map((b) => b.mes),
+      datasets: [
+        { label: 'Entradas', data: stats.movimentacaoMensal.map((b) => b.entradas), backgroundColor: '#3B6E8F', borderRadius: 4 },
+        { label: 'Saídas', data: stats.movimentacaoMensal.map((b) => b.saidas), backgroundColor: '#F5A623', borderRadius: 4 },
+      ],
+    },
+    options: { responsive: true, plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 12 } } } }, scales: { x: { grid: { display: false } }, y: { grid: { color: '#E3E0D8' } } } },
+  });
+
+  if (stats.estoquePorCategoria.length) {
+    if (charts.cat) charts.cat.destroy();
+    charts.cat = new Chart(document.getElementById('chart-categoria'), {
+      type: 'bar',
+      data: { labels: stats.estoquePorCategoria.map((c) => c.categoria), datasets: [{ label: 'Quantidade', data: stats.estoquePorCategoria.map((c) => c.quantidade), backgroundColor: '#4B7B4F', borderRadius: 4 }] },
+      options: { indexAxis: 'y', responsive: true, plugins: { legend: { display: false } }, scales: { x: { grid: { color: '#E3E0D8' } }, y: { grid: { display: false } } } },
+    });
+  }
+}
+
+function statCard(label, value, icon, tone, hint) {
+  const toneClasses = { amber: 'bg-amber-50 text-amber-600', steel: 'bg-steel-50 text-steel-600', rust: 'bg-rust-50 text-rust-500', moss: 'bg-moss-50 text-moss-500' }[tone];
+  return `<div class="card-surface animate-enter p-5 flex items-start justify-between gap-3">
+    <div class="min-w-0"><p class="text-xs font-semibold uppercase tracking-wide text-ink-soft">${esc(label)}</p>
+      <p class="font-display text-4xl font-bold text-ink mt-1 truncate">${value}</p>
+      ${hint ? `<p class="text-xs text-ink-soft mt-1">${esc(hint)}</p>` : ''}</div>
+    <div class="shrink-0 rounded-lg p-2.5 ${toneClasses}"><i data-lucide="${icon}" style="width:20px;height:20px"></i></div>
+  </div>`;
+}
+
+/* ============================================================================
+ * ESTOQUE
+ * ========================================================================== */
+async function viewInventory(el) {
+  const items = await api.inventory();
+
+  el.innerHTML = pageHeader('Saldo atual', 'Estoque', 'Saldo calculado automaticamente a partir do histórico de entradas e saídas.',
+    `<button id="export-inventory" class="btn btn-ghost"><i data-lucide="download" style="width:15px;height:15px"></i>Exportar CSV</button>`) +
+    (items.length === 0 ? `<div class="card-surface">${emptyState('boxes', 'Nenhum material com estoque', 'Cadastre materiais e registre entradas para ver o saldo aqui.')}</div>` : `
+    <div class="card-surface overflow-hidden">
+      <div class="overflow-x-auto"><table class="data-table">
+        <thead><tr><th>Material</th><th>Categoria</th><th class="text-right">Particular</th><th class="text-right">Energisa</th><th class="text-right">Total</th><th>Status</th></tr></thead>
+        <tbody>${items.map((m) => `
+          <tr>
+            <td class="font-medium text-ink">${esc(m.descricao)}</td>
+            <td class="text-ink-soft">${esc(m.categoria)}</td>
+            <td class="text-right code-tag">${fmtNumber(m.particular)} ${esc(m.unidade)}</td>
+            <td class="text-right code-tag">${fmtNumber(m.energisa)} ${esc(m.unidade)}</td>
+            <td class="text-right code-tag font-semibold">${fmtNumber(m.total)} ${esc(m.unidade)}</td>
+            <td>${m.abaixoDoMinimo ? stamp('Abaixo do mínimo', 'rust') : stamp('Ok', 'moss')}</td>
+          </tr>`).join('')}</tbody>
+      </table></div>
+    </div>`);
+  icons();
+
+  document.getElementById('export-inventory')?.addEventListener('click', () => {
+    downloadCSV('estoque.csv', items.map((m) => ({
+      Material: m.descricao, Categoria: m.categoria, Unidade: m.unidade,
+      Particular: m.particular, Energisa: m.energisa, Total: m.total, 'Estoque mínimo': m.estoqueMinimo,
+    })));
+  });
+}
+
+/* ============================================================================
+ * MATERIAIS
+ * ========================================================================== */
+async function viewMaterials(el) {
+  const isAdmin = state.user.perfil === 'ADMIN';
+  let items = await api.materials();
+  let search = '';
+
+  function draw() {
+    const q = search.trim().toLowerCase();
+    const filtered = q ? items.filter((m) => m.descricao.toLowerCase().includes(q) || m.categoria.toLowerCase().includes(q)) : items;
+
+    el.innerHTML = pageHeader('Catálogo', 'Materiais', 'Itens controlados pelo almoxarifado, com unidade de medida e estoque mínimo.',
+      isAdmin ? `<button id="new-material" class="btn btn-secondary"><i data-lucide="plus" style="width:16px;height:16px"></i>Novo material</button>` : '') + `
+      <div class="card-surface p-4 mb-4">
+        <div class="relative max-w-sm">
+          <i data-lucide="search" class="absolute left-3 top-1/2 -translate-y-1/2 text-ink-soft" style="width:16px;height:16px"></i>
+          <input id="material-search" class="field-input pl-9" placeholder="Buscar por descrição ou categoria…" value="${esc(search)}" />
+        </div>
+      </div>
+      <div class="card-surface overflow-hidden">
+        ${filtered.length === 0 ? emptyState('package', 'Nenhum material cadastrado', 'Cadastre o primeiro material para começar a controlar o estoque.') : `
+        <div class="overflow-x-auto"><table class="data-table">
+          <thead><tr><th>Código</th><th>Descrição</th><th>Categoria</th><th>Unidade</th><th class="text-right">Estoque mín.</th>${isAdmin ? '<th></th>' : ''}</tr></thead>
+          <tbody>${filtered.map((m) => `
+            <tr>
+              <td class="code-tag text-ink-soft">${esc(m.id)}</td>
+              <td class="font-medium text-ink">${esc(m.descricao)}</td>
+              <td class="text-ink-soft">${esc(m.categoria)}</td>
+              <td class="text-ink-soft">${esc(m.unidade)}</td>
+              <td class="text-right code-tag">${fmtNumber(m.estoqueMinimo)}</td>
+              ${isAdmin ? `<td class="text-right"><button data-edit="${esc(m.id)}" class="text-ink-soft hover:text-amber-600 p-1"><i data-lucide="pencil" style="width:15px;height:15px"></i></button></td>` : ''}
+            </tr>`).join('')}</tbody>
+        </table></div>`}
+      </div>`;
+    icons();
+
+    document.getElementById('material-search')?.addEventListener('input', (e) => { search = e.target.value; draw(); });
+    document.getElementById('new-material')?.addEventListener('click', () => openMaterialForm());
+    el.querySelectorAll('[data-edit]').forEach((btn) => btn.addEventListener('click', () => openMaterialForm(items.find((m) => m.id === btn.dataset.edit))));
+  }
+
+  function openMaterialForm(existing) {
+    const f = existing || { descricao: '', unidade: '', categoria: '', estoqueMinimo: 0, observacoes: '' };
+    openModal(existing ? 'Editar material' : 'Novo material', `
+      <form id="material-form">
+        ${field('Descrição', `<input class="field-input" id="f-descricao" required value="${esc(f.descricao)}" placeholder="Ex.: Cabo de alumínio 4mm" />`, true)}
+        <div class="grid grid-cols-2 gap-3">
+          ${field('Unidade', `<input class="field-input" id="f-unidade" required value="${esc(f.unidade)}" placeholder="UN, M, KG…" />`, true)}
+          ${field('Categoria', `<input class="field-input" id="f-categoria" required value="${esc(f.categoria)}" placeholder="Elétrico, Ferragem…" />`, true)}
+        </div>
+        ${field('Estoque mínimo', `<input type="number" min="0" class="field-input" id="f-estoqueMinimo" required value="${esc(f.estoqueMinimo)}" />`, true)}
+        ${field('Observações', `<textarea class="field-input" id="f-observacoes" rows="3">${esc(f.observacoes)}</textarea>`)}
+        <div class="flex justify-end gap-2 mt-4">
+          <button type="button" class="btn btn-ghost" onclick="closeModal()">Cancelar</button>
+          <button type="submit" id="material-save" class="btn btn-secondary">Salvar</button>
+        </div>
+      </form>`);
+
+    document.getElementById('material-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById('material-save');
+      btn.disabled = true; btn.textContent = 'Salvando…';
+      const data = {
+        descricao: document.getElementById('f-descricao').value,
+        unidade: document.getElementById('f-unidade').value,
+        categoria: document.getElementById('f-categoria').value,
+        estoqueMinimo: Number(document.getElementById('f-estoqueMinimo').value),
+        observacoes: document.getElementById('f-observacoes').value,
+      };
+      try {
+        if (existing) { await api.updateMaterial(existing.id, data); toast('Material atualizado.'); }
+        else { await api.createMaterial(data); toast('Material cadastrado.'); }
+        closeModal();
+        items = await api.materials();
+        draw();
+      } catch (err) {
+        toast(err.message || 'Erro ao salvar material.', 'error');
+        btn.disabled = false; btn.textContent = 'Salvar';
+      }
+    });
+  }
+
+  draw();
+}
+
+/* ============================================================================
+ * OBRAS
+ * ========================================================================== */
+async function viewWorks(el) {
+  const isAdmin = state.user.perfil === 'ADMIN';
+  let items = await api.works();
+
+  function draw() {
+    el.innerHTML = pageHeader('Cadastro', 'Obras', 'Obras atendidas pelo almoxarifado, com contratante e situação atual.',
+      isAdmin ? `<button id="new-work" class="btn btn-secondary"><i data-lucide="plus" style="width:16px;height:16px"></i>Nova obra</button>` : '') + `
+      <div class="card-surface overflow-hidden">
+        ${items.length === 0 ? emptyState('hard-hat', 'Nenhuma obra cadastrada', 'Cadastre a primeira obra para vincular saídas e aplicações em campo.') : `
+        <div class="overflow-x-auto"><table class="data-table">
+          <thead><tr><th>Obra</th><th>Contratante</th><th>Tipo</th><th>Início</th><th>Status</th>${isAdmin ? '<th></th>' : ''}</tr></thead>
+          <tbody>${items.map((o) => `
+            <tr>
+              <td class="font-medium text-ink">${esc(o.nome)}</td>
+              <td class="text-ink-soft">${esc(o.contratante)}</td>
+              <td class="text-ink-soft">${esc(o.tipo)}</td>
+              <td class="code-tag">${fmtDate(o.dataInicio)}</td>
+              <td>${stamp(o.status, statusTone(o.status))}</td>
+              ${isAdmin ? `<td class="text-right"><button data-edit="${esc(o.id)}" class="text-ink-soft hover:text-amber-600 p-1"><i data-lucide="pencil" style="width:15px;height:15px"></i></button></td>` : ''}
+            </tr>`).join('')}</tbody>
+        </table></div>`}
+      </div>`;
+    icons();
+    document.getElementById('new-work')?.addEventListener('click', () => openWorkForm());
+    el.querySelectorAll('[data-edit]').forEach((btn) => btn.addEventListener('click', () => openWorkForm(items.find((o) => o.id === btn.dataset.edit))));
+  }
+
+  function openWorkForm(existing) {
+    const f = existing || { nome: '', contratante: '', dataInicio: todayISO(), status: 'Em andamento', tipo: '', observacoes: '' };
+    openModal(existing ? 'Editar obra' : 'Nova obra', `
+      <form id="work-form">
+        ${field('Nome da obra', `<input class="field-input" id="f-nome" required value="${esc(f.nome)}" />`, true)}
+        ${field('Contratante', `<input class="field-input" id="f-contratante" required value="${esc(f.contratante)}" />`, true)}
+        <div class="grid grid-cols-2 gap-3">
+          ${field('Data de início', `<input type="date" class="field-input" id="f-dataInicio" required value="${esc(f.dataInicio)}" />`, true)}
+          ${field('Status', `<select class="field-input" id="f-status">
+              <option value="Em andamento" ${f.status === 'Em andamento' ? 'selected' : ''}>Em andamento</option>
+              <option value="Concluída" ${f.status === 'Concluída' ? 'selected' : ''}>Concluída</option>
+            </select>`)}
+        </div>
+        ${field('Tipo', `<input class="field-input" id="f-tipo" required value="${esc(f.tipo)}" placeholder="Particular, Energisa…" />`, true)}
+        ${field('Observações', `<textarea class="field-input" id="f-observacoes" rows="3">${esc(f.observacoes)}</textarea>`)}
+        <div class="flex justify-end gap-2 mt-4">
+          <button type="button" class="btn btn-ghost" onclick="closeModal()">Cancelar</button>
+          <button type="submit" id="work-save" class="btn btn-secondary">Salvar</button>
+        </div>
+      </form>`);
+
+    document.getElementById('work-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById('work-save');
+      btn.disabled = true; btn.textContent = 'Salvando…';
+      const data = {
+        nome: document.getElementById('f-nome').value,
+        contratante: document.getElementById('f-contratante').value,
+        dataInicio: document.getElementById('f-dataInicio').value,
+        status: document.getElementById('f-status').value,
+        tipo: document.getElementById('f-tipo').value,
+        observacoes: document.getElementById('f-observacoes').value,
+      };
+      try {
+        if (existing) { await api.updateWork(existing.id, data); toast('Obra atualizada.'); }
+        else { await api.createWork(data); toast('Obra cadastrada.'); }
+        closeModal();
+        items = await api.works();
+        draw();
+      } catch (err) {
+        toast(err.message || 'Erro ao salvar obra.', 'error');
+        btn.disabled = false; btn.textContent = 'Salvar';
+      }
+    });
+  }
+
+  draw();
+}
+
+/* ============================================================================
+ * ENTRADAS
+ * ========================================================================== */
+async function viewEntries(el) {
+  let [items, materials, works] = await Promise.all([api.entries(), api.materials(), api.works()]);
+  const materialName = (id) => materials.find((m) => m.id === id)?.descricao || id;
+
+  function draw() {
+    el.innerHTML = pageHeader('Registro', 'Entradas', 'Histórico de recebimento de materiais no almoxarifado. Lançamentos não podem ser editados ou apagados.',
+      `<div class="flex gap-2">
+        <button id="export-entries" class="btn btn-ghost"><i data-lucide="download" style="width:15px;height:15px"></i>CSV</button>
+        <button id="new-entry" class="btn btn-secondary"><i data-lucide="plus" style="width:16px;height:16px"></i>Registrar entrada</button>
+      </div>`) + `
+      <div class="card-surface overflow-hidden">
+        ${items.length === 0 ? emptyState('arrow-down-to-line', 'Nenhuma entrada registrada', 'Registre a primeira entrada de material no almoxarifado.') : `
+        <div class="overflow-x-auto"><table class="data-table">
+          <thead><tr><th>Data</th><th>Material</th><th>Tipo</th><th class="text-right">Qtd.</th><th>Fornecedor</th><th>Nota fiscal</th><th>Recebido por</th></tr></thead>
+          <tbody>${items.map((e) => `
+            <tr>
+              <td class="code-tag">${fmtDate(e.data)}</td>
+              <td class="font-medium text-ink">${esc(materialName(e.materialId))}</td>
+              <td>${stamp(e.tipoEstoque, statusTone(e.tipoEstoque))}</td>
+              <td class="text-right code-tag">${fmtNumber(e.quantidade)}</td>
+              <td class="text-ink-soft">${esc(e.fornecedor)}</td>
+              <td class="code-tag text-ink-soft">${esc(e.notaFiscal || '—')}</td>
+              <td class="text-ink-soft">${esc(e.recebidoPor)}</td>
+            </tr>`).join('')}</tbody>
+        </table></div>`}
+      </div>`;
+    icons();
+
+    document.getElementById('export-entries')?.addEventListener('click', () => {
+      downloadCSV('entradas.csv', items.map((e) => ({ Data: e.data, Material: materialName(e.materialId), Tipo: e.tipoEstoque, Quantidade: e.quantidade, Fornecedor: e.fornecedor, 'Nota Fiscal': e.notaFiscal, 'Recebido por': e.recebidoPor })));
+    });
+    document.getElementById('new-entry')?.addEventListener('click', openEntryForm);
+  }
+
+  function openEntryForm() {
+    openModal('Registrar entrada', `
+      <form id="entry-form">
+        <div class="grid grid-cols-2 gap-3">
+          ${field('Data', `<input type="date" class="field-input" id="f-data" required value="${todayISO()}" />`, true)}
+          ${field('Tipo de estoque', `<select class="field-input" id="f-tipoEstoque"><option value="Particular">Particular</option><option value="Energisa">Energisa</option></select>`, true)}
+        </div>
+        ${field('Material', `<select class="field-input" id="f-materialId" required>${materials.map((m) => `<option value="${esc(m.id)}">${esc(m.descricao)}</option>`).join('')}</select>`, true)}
+        <div class="grid grid-cols-2 gap-3">
+          ${field('Quantidade', `<input type="number" min="1" step="any" class="field-input" id="f-quantidade" required />`, true)}
+          ${field('Obra vinculada', `<select class="field-input" id="f-obraId"><option value="">—</option>${works.map((w) => `<option value="${esc(w.id)}">${esc(w.nome)}</option>`).join('')}</select>`)}
+        </div>
+        ${field('Fornecedor', `<input class="field-input" id="f-fornecedor" required />`, true)}
+        ${field('Nota fiscal', `<input class="field-input" id="f-notaFiscal" />`)}
+        ${field('Observações', `<textarea class="field-input" id="f-observacoes" rows="2"></textarea>`)}
+        <div class="flex justify-end gap-2 mt-4">
+          <button type="button" class="btn btn-ghost" onclick="closeModal()">Cancelar</button>
+          <button type="submit" id="entry-save" class="btn btn-secondary">Registrar</button>
+        </div>
+      </form>`);
+
+    document.getElementById('entry-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById('entry-save');
+      btn.disabled = true; btn.textContent = 'Registrando…';
+      const data = {
+        data: document.getElementById('f-data').value,
+        tipoEstoque: document.getElementById('f-tipoEstoque').value,
+        materialId: document.getElementById('f-materialId').value,
+        quantidade: Number(document.getElementById('f-quantidade').value),
+        obraId: document.getElementById('f-obraId').value,
+        fornecedor: document.getElementById('f-fornecedor').value,
+        notaFiscal: document.getElementById('f-notaFiscal').value,
+        observacoes: document.getElementById('f-observacoes').value,
+      };
+      try {
+        await api.createEntry(data);
+        toast('Entrada registrada.');
+        closeModal();
+        items = await api.entries();
+        draw();
+      } catch (err) {
+        toast(err.message || 'Erro ao registrar entrada.', 'error');
+        btn.disabled = false; btn.textContent = 'Registrar';
+      }
+    });
+  }
+
+  draw();
+}
+
+/* ============================================================================
+ * SAÍDAS
+ * ========================================================================== */
+async function viewOutputs(el) {
+  let [items, materials, works] = await Promise.all([api.outputs(), api.materials(), api.works()]);
+  const materialName = (id) => materials.find((m) => m.id === id)?.descricao || id;
+  const workName = (id) => works.find((w) => w.id === id)?.nome || id;
+
+  function draw() {
+    el.innerHTML = pageHeader('Registro', 'Saídas', 'Histórico de retirada de materiais do almoxarifado para as obras.',
+      `<div class="flex gap-2">
+        <button id="export-outputs" class="btn btn-ghost"><i data-lucide="download" style="width:15px;height:15px"></i>CSV</button>
+        <button id="new-output" class="btn btn-secondary"><i data-lucide="plus" style="width:16px;height:16px"></i>Registrar saída</button>
+      </div>`) + `
+      <div class="card-surface overflow-hidden">
+        ${items.length === 0 ? emptyState('arrow-up-from-line', 'Nenhuma saída registrada', 'Registre a primeira retirada de material para uma obra.') : `
+        <div class="overflow-x-auto"><table class="data-table">
+          <thead><tr><th>Data</th><th>Material</th><th>Obra</th><th>Tipo</th><th class="text-right">Qtd.</th><th>Equipe</th><th>Retirado por</th></tr></thead>
+          <tbody>${items.map((s) => `
+            <tr>
+              <td class="code-tag">${fmtDate(s.data)}</td>
+              <td class="font-medium text-ink">${esc(materialName(s.materialId))}</td>
+              <td class="text-ink-soft">${esc(workName(s.obraId))}</td>
+              <td>${stamp(s.tipoEstoque, statusTone(s.tipoEstoque))}</td>
+              <td class="text-right code-tag">${fmtNumber(s.quantidade)}</td>
+              <td class="text-ink-soft">${esc(s.equipeResponsavel)}</td>
+              <td class="text-ink-soft">${esc(s.retiradoPor)}</td>
+            </tr>`).join('')}</tbody>
+        </table></div>`}
+      </div>`;
+    icons();
+
+    document.getElementById('export-outputs')?.addEventListener('click', () => {
+      downloadCSV('saidas.csv', items.map((s) => ({ Data: s.data, Material: materialName(s.materialId), Obra: workName(s.obraId), Tipo: s.tipoEstoque, Quantidade: s.quantidade, Equipe: s.equipeResponsavel, 'Retirado por': s.retiradoPor })));
+    });
+    document.getElementById('new-output')?.addEventListener('click', openOutputForm);
+  }
+
+  function openOutputForm() {
+    openModal('Registrar saída', `
+      <form id="output-form">
+        <div class="grid grid-cols-2 gap-3">
+          ${field('Data', `<input type="date" class="field-input" id="f-data" required value="${todayISO()}" />`, true)}
+          ${field('Tipo de estoque', `<select class="field-input" id="f-tipoEstoque"><option value="Particular">Particular</option><option value="Energisa">Energisa</option><option value="Misto">Misto</option></select>`, true)}
+        </div>
+        ${field('Obra', `<select class="field-input" id="f-obraId" required>${works.map((w) => `<option value="${esc(w.id)}">${esc(w.nome)}</option>`).join('')}</select>`, true)}
+        ${field('Material', `<select class="field-input" id="f-materialId" required>${materials.map((m) => `<option value="${esc(m.id)}">${esc(m.descricao)}</option>`).join('')}</select>`, true)}
+        ${field('Quantidade', `<input type="number" min="1" step="any" class="field-input" id="f-quantidade" required />`, true)}
+        ${field('Equipe responsável', `<input class="field-input" id="f-equipeResponsavel" required />`, true)}
+        ${field('Origem/complemento', `<input class="field-input" id="f-origemComplemento" placeholder="Ex.: complementado com estoque Particular" />`)}
+        ${field('Observações', `<textarea class="field-input" id="f-observacoes" rows="2"></textarea>`)}
+        <div class="flex justify-end gap-2 mt-4">
+          <button type="button" class="btn btn-ghost" onclick="closeModal()">Cancelar</button>
+          <button type="submit" id="output-save" class="btn btn-secondary">Registrar</button>
+        </div>
+      </form>`);
+
+    document.getElementById('output-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById('output-save');
+      btn.disabled = true; btn.textContent = 'Registrando…';
+      const data = {
+        data: document.getElementById('f-data').value,
+        tipoEstoque: document.getElementById('f-tipoEstoque').value,
+        obraId: document.getElementById('f-obraId').value,
+        materialId: document.getElementById('f-materialId').value,
+        quantidade: Number(document.getElementById('f-quantidade').value),
+        equipeResponsavel: document.getElementById('f-equipeResponsavel').value,
+        origemComplemento: document.getElementById('f-origemComplemento').value,
+        observacoes: document.getElementById('f-observacoes').value,
+      };
+      try {
+        await api.createOutput(data);
+        toast('Saída registrada.');
+        closeModal();
+        items = await api.outputs();
+        draw();
+      } catch (err) {
+        toast(err.message || 'Erro ao registrar saída.', 'error');
+        btn.disabled = false; btn.textContent = 'Registrar';
+      }
+    });
+  }
+
+  draw();
+}
+
+/* ============================================================================
+ * APLICAÇÕES EM CAMPO
+ * ========================================================================== */
+async function viewFieldApplications(el) {
+  let [items, materials, works] = await Promise.all([api.fieldApps(), api.materials(), api.works()]);
+  const materialName = (id) => materials.find((m) => m.id === id)?.descricao || id;
+  const workName = (id) => works.find((w) => w.id === id)?.nome || id;
+
+  function draw() {
+    el.innerHTML = pageHeader('Registro', 'Aplicações em campo', 'O que foi efetivamente aplicado em obra e o que sobrou com a equipe.',
+      `<div class="flex gap-2">
+        <button id="export-apps" class="btn btn-ghost"><i data-lucide="download" style="width:15px;height:15px"></i>CSV</button>
+        <button id="new-app" class="btn btn-secondary"><i data-lucide="plus" style="width:16px;height:16px"></i>Registrar aplicação</button>
+      </div>`) + `
+      <div class="card-surface overflow-hidden">
+        ${items.length === 0 ? emptyState('map-pin', 'Nenhuma aplicação registrada', 'Registre a primeira aplicação em campo.') : `
+        <div class="overflow-x-auto"><table class="data-table">
+          <thead><tr><th>Data</th><th>Material</th><th>Obra</th><th class="text-right">Aplicado</th><th class="text-right">Sobra</th><th>Local</th><th>Equipe</th></tr></thead>
+          <tbody>${items.map((a) => `
+            <tr>
+              <td class="code-tag">${fmtDate(a.data)}</td>
+              <td class="font-medium text-ink">${esc(materialName(a.materialId))}</td>
+              <td class="text-ink-soft">${esc(workName(a.obraId))}</td>
+              <td class="text-right code-tag">${fmtNumber(a.quantidadeAplicada)}</td>
+              <td class="text-right code-tag">${fmtNumber(a.quantidadeSobra)}</td>
+              <td class="text-ink-soft">${esc(a.localizacao)}</td>
+              <td class="text-ink-soft">${esc(a.equipe)}</td>
+            </tr>`).join('')}</tbody>
+        </table></div>`}
+      </div>`;
+    icons();
+
+    document.getElementById('export-apps')?.addEventListener('click', () => {
+      downloadCSV('aplicacoes-campo.csv', items.map((a) => ({ Data: a.data, Material: materialName(a.materialId), Obra: workName(a.obraId), Aplicado: a.quantidadeAplicada, Sobra: a.quantidadeSobra, Local: a.localizacao, Equipe: a.equipe, Responsável: a.responsavel })));
+    });
+    document.getElementById('new-app')?.addEventListener('click', openAppForm);
+  }
+
+  function openAppForm() {
+    openModal('Registrar aplicação em campo', `
+      <form id="app-form">
+        ${field('Data', `<input type="date" class="field-input" id="f-data" required value="${todayISO()}" />`, true)}
+        ${field('Obra', `<select class="field-input" id="f-obraId" required>${works.map((w) => `<option value="${esc(w.id)}">${esc(w.nome)}</option>`).join('')}</select>`, true)}
+        ${field('Material', `<select class="field-input" id="f-materialId" required>${materials.map((m) => `<option value="${esc(m.id)}">${esc(m.descricao)}</option>`).join('')}</select>`, true)}
+        <div class="grid grid-cols-2 gap-3">
+          ${field('Quantidade aplicada', `<input type="number" min="0" step="any" class="field-input" id="f-quantidadeAplicada" required />`, true)}
+          ${field('Quantidade de sobra', `<input type="number" min="0" step="any" class="field-input" id="f-quantidadeSobra" value="0" />`)}
+        </div>
+        ${field('Equipe', `<input class="field-input" id="f-equipe" required />`, true)}
+        ${field('Local/ponto de aplicação', `<input class="field-input" id="f-localizacao" required />`, true)}
+        ${field('Observações', `<textarea class="field-input" id="f-observacoes" rows="2"></textarea>`)}
+        <div class="flex justify-end gap-2 mt-4">
+          <button type="button" class="btn btn-ghost" onclick="closeModal()">Cancelar</button>
+          <button type="submit" id="app-save" class="btn btn-secondary">Registrar</button>
+        </div>
+      </form>`);
+
+    document.getElementById('app-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById('app-save');
+      btn.disabled = true; btn.textContent = 'Registrando…';
+      const data = {
+        data: document.getElementById('f-data').value,
+        obraId: document.getElementById('f-obraId').value,
+        materialId: document.getElementById('f-materialId').value,
+        quantidadeAplicada: Number(document.getElementById('f-quantidadeAplicada').value),
+        quantidadeSobra: Number(document.getElementById('f-quantidadeSobra').value || 0),
+        equipe: document.getElementById('f-equipe').value,
+        localizacao: document.getElementById('f-localizacao').value,
+        observacoes: document.getElementById('f-observacoes').value,
+      };
+      try {
+        await api.createFieldApp(data);
+        toast('Aplicação registrada.');
+        closeModal();
+        items = await api.fieldApps();
+        draw();
+      } catch (err) {
+        toast(err.message || 'Erro ao registrar aplicação.', 'error');
+        btn.disabled = false; btn.textContent = 'Registrar';
+      }
+    });
+  }
+
+  draw();
+}
+
+/* ============================================================================
+ * USUÁRIOS (admin) — inclui configuração automática da planilha
+ * ========================================================================== */
+async function viewUsers(el) {
+  let items = await api.users();
+  let status = null;
+  try { status = await api.setupStatus(); } catch (e) { /* ignore */ }
+
+  function draw() {
+    el.innerHTML = pageHeader('Acesso', 'Usuários', 'Pessoas com acesso ao sistema e status da conexão com a planilha do Google.',
+      `<button id="new-user" class="btn btn-secondary"><i data-lucide="plus" style="width:16px;height:16px"></i>Novo usuário</button>`) + `
+      <div class="card-surface p-5 mb-6">
+        <div class="flex items-center justify-between gap-3 mb-1">
+          <h3 class="font-display text-xl font-semibold text-ink flex items-center gap-2">
+            <i data-lucide="sheet" class="text-amber-600" style="width:18px;height:18px"></i> Configuração da planilha
+          </h3>
+          <div class="flex gap-2">
+            <button id="check-status" class="btn btn-ghost"><i data-lucide="refresh-cw" style="width:14px;height:14px"></i>Verificar</button>
+            ${status && status.abasFaltando.length > 0 ? `<button id="provision" class="btn btn-secondary">Criar abas faltantes</button>` : ''}
+          </div>
+        </div>
+        ${status ? `
+          <div class="mt-3">
+            <div class="mb-3">${status.configurado ? stamp('Planilha configurada', 'moss') : stamp('Faltam abas', 'rust')}</div>
+            <p class="text-xs text-ink-soft">Abas encontradas: <span class="code-tag">${esc(status.abasExistentes.join(', ') || '—')}</span></p>
+            ${status.abasFaltando.length > 0 ? `<p class="text-xs text-rust-500 mt-1">Abas faltando: <span class="code-tag">${esc(status.abasFaltando.join(', '))}</span> — clique em "Criar abas faltantes" para gerar automaticamente com os cabeçalhos corretos.</p>` : ''}
+          </div>` : `<p class="text-sm text-ink-soft mt-2">Não foi possível verificar a planilha.</p>`}
+      </div>
+      <div class="card-surface overflow-hidden">
+        <div class="overflow-x-auto"><table class="data-table">
+          <thead><tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Equipe</th><th>Status</th><th></th></tr></thead>
+          <tbody>${items.map((u) => `
+            <tr>
+              <td class="font-medium text-ink">${esc(u.nome)}</td>
+              <td class="text-ink-soft">${esc(u.email)}</td>
+              <td>${stamp(u.perfil, u.perfil === 'ADMIN' ? 'amber' : 'steel')}</td>
+              <td class="text-ink-soft">${esc(u.equipeVinculada || '—')}</td>
+              <td>${stamp(u.ativo ? 'Ativo' : 'Inativo', u.ativo ? 'moss' : 'rust')}</td>
+              <td class="text-right"><button data-toggle="${esc(u.id)}" class="btn btn-ghost !py-1 !px-2.5 text-xs">${u.ativo ? 'Desativar' : 'Reativar'}</button></td>
+            </tr>`).join('')}</tbody>
+        </table></div>
+        ${items.length === 0 ? `<div class="p-6 text-center text-sm text-ink-soft flex flex-col items-center gap-2">
+          <i data-lucide="users" style="width:22px;height:22px"></i>Nenhum usuário cadastrado na planilha ainda. Você está usando a conta administradora de emergência.</div>` : ''}
+      </div>`;
+    icons();
+
+    document.getElementById('check-status')?.addEventListener('click', async () => {
+      try { status = await api.setupStatus(); draw(); } catch (err) { toast(err.message, 'error'); }
+    });
+    document.getElementById('provision')?.addEventListener('click', async () => {
+      try {
+        const r = await api.provisionSheets();
+        status = r;
+        toast(r.criadas.length ? `Abas criadas: ${r.criadas.join(', ')}` : 'Planilha já estava configurada.');
+        draw();
+      } catch (err) { toast(err.message || 'Erro ao configurar a planilha.', 'error'); }
+    });
+    document.getElementById('new-user')?.addEventListener('click', openUserForm);
+    el.querySelectorAll('[data-toggle]').forEach((btn) => btn.addEventListener('click', async () => {
+      const u = items.find((x) => x.id === btn.dataset.toggle);
+      try {
+        await api.toggleUser(u.id, !u.ativo);
+        toast(u.ativo ? 'Usuário desativado.' : 'Usuário reativado.');
+        items = await api.users();
+        draw();
+      } catch (err) { toast(err.message || 'Erro ao atualizar usuário.', 'error'); }
+    }));
+  }
+
+  function openUserForm() {
+    openModal('Novo usuário', `
+      <form id="user-form">
+        ${field('Nome', `<input class="field-input" id="f-nome" required />`, true)}
+        ${field('E-mail', `<input type="email" class="field-input" id="f-email" required />`, true)}
+        ${field('Senha provisória', `<input type="text" minlength="6" class="field-input" id="f-senha" required placeholder="Mínimo 6 caracteres" />`, true)}
+        <div class="grid grid-cols-2 gap-3">
+          ${field('Perfil', `<select class="field-input" id="f-perfil"><option value="EQUIPE">Equipe</option><option value="ADMIN">Administrador</option></select>`, true)}
+          ${field('Equipe vinculada', `<input class="field-input" id="f-equipeVinculada" placeholder="Equipe Alpha…" />`)}
+        </div>
+        <div class="flex justify-end gap-2 mt-4">
+          <button type="button" class="btn btn-ghost" onclick="closeModal()">Cancelar</button>
+          <button type="submit" id="user-save" class="btn btn-secondary">Cadastrar</button>
+        </div>
+      </form>`);
+
+    document.getElementById('user-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById('user-save');
+      btn.disabled = true; btn.textContent = 'Salvando…';
+      const data = {
+        nome: document.getElementById('f-nome').value,
+        email: document.getElementById('f-email').value,
+        senha: document.getElementById('f-senha').value,
+        perfil: document.getElementById('f-perfil').value,
+        equipeVinculada: document.getElementById('f-equipeVinculada').value,
+      };
+      try {
+        await api.createUser(data);
+        toast('Usuário cadastrado. Compartilhe o e-mail e a senha com a pessoa.');
+        closeModal();
+        items = await api.users();
+        draw();
+      } catch (err) {
+        toast(err.message || 'Erro ao cadastrar usuário.', 'error');
+        btn.disabled = false; btn.textContent = 'Cadastrar';
+      }
+    });
+  }
+
+  draw();
+}
+</script>

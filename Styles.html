@@ -1,0 +1,48 @@
+<style>
+  html { font-family: 'Inter', system-ui, sans-serif; }
+  ::selection { background: #f8b84a; color: #101316; }
+  :focus-visible { outline: 2px solid #f5a623; outline-offset: 2px; }
+
+  .stamp {
+    display: inline-flex; align-items: center; gap: .35rem;
+    font-family: 'Barlow Condensed', sans-serif; font-weight: 700;
+    letter-spacing: .06em; text-transform: uppercase; font-size: .72rem;
+    padding: .18rem .6rem; border: 1.5px dashed currentColor; border-radius: 3px;
+    transform: rotate(-1.5deg); white-space: nowrap;
+  }
+  .code-tag { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .75rem; letter-spacing: .02em; }
+  .card-surface { background: #fff; border: 1px solid #e3e0d8; border-radius: .75rem; }
+  .field-input {
+    width: 100%; border-radius: .375rem; border: 1px solid #e3e0d8; background: #f6f5f1;
+    padding: .5rem .75rem; font-size: .875rem; color: #1c2126; transition: border-color .15s, background .15s;
+  }
+  .field-input:focus { border-color: #f5a623; background: #fff; outline: none; }
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: .5rem; border-radius: .375rem; padding: .5rem 1rem; font-size: .875rem; font-weight: 600; transition: background-color .15s; cursor: pointer; border: none; }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .btn-primary { background: #191d21; color: #fff; }
+  .btn-primary:hover:not(:disabled) { background: #23282e; }
+  .btn-secondary { background: #f5a623; color: #101316; }
+  .btn-secondary:hover:not(:disabled) { background: #f8b84a; }
+  .btn-ghost { background: transparent; color: #1c2126; border: 1px solid #e3e0d8; }
+  .btn-ghost:hover:not(:disabled) { background: rgba(25,29,33,.05); }
+
+  @keyframes fadeInUp { from { opacity:0; transform: translateY(6px);} to { opacity:1; transform:translateY(0);} }
+  .animate-enter { animation: fadeInUp .3s ease both; }
+
+  table.data-table { width: 100%; font-size: .875rem; border-collapse: collapse; }
+  table.data-table thead th {
+    text-align: left; font-size: .72rem; text-transform: uppercase; letter-spacing: .04em;
+    color: #565f66; font-weight: 600; padding: .7rem 1rem; border-bottom: 1px solid #e3e0d8;
+  }
+  table.data-table tbody td { padding: .7rem 1rem; border-bottom: 1px solid #e3e0d8; }
+  table.data-table tbody tr:last-child td { border-bottom: none; }
+  table.data-table tbody tr:hover { background: rgba(246,245,241,.7); }
+
+  .nav-link { display: flex; align-items: center; gap: .75rem; border-radius: .375rem; padding: .6rem .75rem; font-size: .875rem; font-weight: 500; color: #4a5560; transition: background-color .15s, color .15s; cursor: pointer; background: none; border: none; font-family: 'Inter', sans-serif; text-align: left; width: 100%; }
+  .nav-link:hover { background: #23282e; color: #fff; }
+  .nav-link.active { background: #f5a623; color: #101316; font-weight: 600; }
+
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: #d8d4ca; border-radius: 6px; }
+  #app::-webkit-scrollbar-thumb { background: #4a5560; }
+</style>

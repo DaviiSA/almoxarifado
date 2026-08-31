@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Almoxarifado</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700;800&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            display: ["'Barlow Condensed'", "Inter", "sans-serif"],
+            sans: ["Inter", "system-ui", "sans-serif"],
+            mono: ["'JetBrains Mono'", "ui-monospace", "monospace"],
+          },
+          colors: {
+            paper: '#f6f5f1',
+            card: '#ffffff',
+            ink: '#1c2126',
+            'ink-soft': '#565f66',
+            line: '#e3e0d8',
+            graphite: { 950: '#101316', 900: '#191d21', 800: '#23282e', 700: '#313841', 600: '#4a5560' },
+            amber: { 50: '#fdf3e0', 400: '#f8b84a', 500: '#f5a623', 600: '#d98d0e' },
+            steel: { 50: '#eaf2f6', 400: '#5c93b3', 500: '#3b6e8f', 600: '#2e5872' },
+            rust: { 50: '#fbeae6', 500: '#c4432b' },
+            moss: { 50: '#ecf3ec', 500: '#4b7b4f' },
+          },
+        },
+      },
+    };
+  </script>
+
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+
+  <?!= include('Styles'); ?>
+</head>
+<body class="bg-paper text-ink font-sans antialiased">
+  <div id="toasts" class="fixed bottom-4 right-4 z-[100] flex flex-col gap-2 w-[calc(100%-2rem)] max-w-sm"></div>
+  <div id="app">
+    <div class="min-h-screen flex items-center justify-center">
+      <i data-lucide="loader-2" class="animate-spin text-amber-500" style="width:32px;height:32px"></i>
+    </div>
+  </div>
+
+  <?!= include('Script'); ?>
+</body>
+</html>
